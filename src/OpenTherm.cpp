@@ -31,12 +31,10 @@ void OpenTherm::begin(void (*handleInterruptCallback)(void))
     else
     {
 #if !defined(__AVR__)
-        attachInterruptArg(
-            digitalPinToInterrupt(inPin),
-            OpenTherm::handleInterruptHelper,
-            this,
-            CHANGE
-        );
+        attachInterrupt(
+            digitalPinToInterrupt(inPin), [this]()
+            { this->handleInterrupt(); },
+            CHANGE);
 #endif
     }
     activateBoiler();
@@ -102,30 +100,19 @@ void OpenTherm::sendBit(bool high)
     delayMicroseconds(500);
 }
 
-bool OpenTherm::sendRequestAsync(unsigned long request)
+bool OpenTherm::sendRequestAync(unsigned long request)
 {
+    // Serial.println("Request: " + String(request, HEX));
     noInterrupts();
     const bool ready = isReady();
+    interrupts();
 
     if (!ready)
-    {
-        interrupts();
         return false;
-    }
 
     status = OpenThermStatus::REQUEST_SENDING;
     response = 0;
     responseStatus = OpenThermResponseStatus::NONE;
-
-#ifdef INC_FREERTOS_H
-    BaseType_t schedulerState = xTaskGetSchedulerState();
-    if (schedulerState == taskSCHEDULER_RUNNING)
-    {
-        vTaskSuspendAll();
-    }
-#endif
-
-    interrupts();
 
     sendBit(HIGH); // start bit
     for (int i = 31; i >= 0; i--)
@@ -135,25 +122,15 @@ bool OpenTherm::sendRequestAsync(unsigned long request)
     sendBit(HIGH); // stop bit
     setIdleState();
 
-    responseTimestamp = micros();
     status = OpenThermStatus::RESPONSE_WAITING;
-
-#ifdef INC_FREERTOS_H
-    if (schedulerState == taskSCHEDULER_RUNNING) {
-        xTaskResumeAll();
-    }
-#endif
-
+    responseTimestamp = micros();
     return true;
 }
 
 unsigned long OpenTherm::sendRequest(unsigned long request)
 {
-    if (!sendRequestAsync(request))
-    {
+    if (!sendRequestAync(request))
         return 0;
-    }
-
     while (!isReady())
     {
         process();
@@ -164,28 +141,9 @@ unsigned long OpenTherm::sendRequest(unsigned long request)
 
 bool OpenTherm::sendResponse(unsigned long request)
 {
-    noInterrupts();
-    const bool ready = isReady();
-
-    if (!ready)
-    {
-        interrupts();
-        return false;
-    }
-
     status = OpenThermStatus::REQUEST_SENDING;
     response = 0;
     responseStatus = OpenThermResponseStatus::NONE;
-
-#ifdef INC_FREERTOS_H
-    BaseType_t schedulerState = xTaskGetSchedulerState();
-    if (schedulerState == taskSCHEDULER_RUNNING)
-    {
-        vTaskSuspendAll();
-    }
-#endif
-
-    interrupts();
 
     sendBit(HIGH); // start bit
     for (int i = 31; i >= 0; i--)
@@ -195,13 +153,6 @@ bool OpenTherm::sendResponse(unsigned long request)
     sendBit(HIGH); // stop bit
     setIdleState();
     status = OpenThermStatus::READY;
-
-#ifdef INC_FREERTOS_H
-    if (schedulerState == taskSCHEDULER_RUNNING) {
-        xTaskResumeAll();
-    }
-#endif
-
     return true;
 }
 
@@ -275,13 +226,6 @@ void IRAM_ATTR OpenTherm::handleInterrupt()
         }
     }
 }
-
-#if !defined(__AVR__)
-void IRAM_ATTR OpenTherm::handleInterruptHelper(void* ptr)
-{
-    static_cast<OpenTherm*>(ptr)->handleInterrupt();
-}
-#endif
 
 void OpenTherm::processResponse()
 {
@@ -560,6 +504,12 @@ float OpenTherm::getDHWTemperature()
     return isValidResponse(response) ? getFloat(response) : 0;
 }
 
+float OpenTherm::getOutsideTemperature()
+{
+    unsigned long response = sendRequest(buildRequest(OpenThermMessageType::READ_DATA, OpenThermMessageID::Toutside, 0));
+    return isValidResponse(response) ? getFloat(response) : 0;
+}
+
 float OpenTherm::getModulation()
 {
     unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::RelModLevel, 0));
@@ -569,6 +519,12 @@ float OpenTherm::getModulation()
 float OpenTherm::getPressure()
 {
     unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::CHPressure, 0));
+    return isValidResponse(response) ? getFloat(response) : 0;
+}
+
+float OpenTherm::getFlowRate()
+{
+    unsigned long response = sendRequest(buildRequest(OpenThermRequestType::READ, OpenThermMessageID::DHWFlowRate, 0));
     return isValidResponse(response) ? getFloat(response) : 0;
 }
 
